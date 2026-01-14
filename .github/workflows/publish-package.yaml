@@ -1,0 +1,141 @@
+name: Publish to Typst Universe
+
+on:
+  workflow_call:
+    inputs:
+      fork_repo:
+        description: "The fork of typst/packages to push to (e.g. leonieziechmann/packages)"
+        required: true
+        type: string
+      package_path:
+        description: "Path to the package root (default: .)"
+        required: false
+        default: "."
+        type: string
+      files:
+        description: "Space-separated list of files/dirs to publish"
+        required: false
+        default: "typst.toml lib.typ src LICENSE README.md"
+        type: string
+    secrets:
+      packages_pat:
+        description: "PAT with permissions to push to the fork"
+        required: true
+
+jobs:
+  publish_pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Package Source
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Get Version and Name
+        id: metadata
+        working-directory: source/${{ inputs.package_path }}
+        run: |
+          VERSION=$(grep '^version =' typst.toml | cut -d '"' -f 2)
+          NAME=$(grep '^name =' typst.toml | cut -d '"' -f 2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+
+      - name: Checkout Packages Fork
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.fork_repo }}
+          path: packages-fork
+          token: ${{ secrets.packages_pat }}
+
+      - name: Prepare Package Files
+        id: prep
+        run: |
+          PACKAGE_NAME=${{ steps.metadata.outputs.name }}
+          VERSION=${{ steps.metadata.outputs.version }}
+
+          SOURCE_ROOT="source/${{ inputs.package_path }}"
+          TARGET_BASE="packages-fork/packages/preview/$PACKAGE_NAME"
+          TARGET_DIR="$TARGET_BASE/$VERSION"
+
+          # Detect Update vs New
+          if [ -d "$TARGET_BASE" ]; then
+             echo "is_update=true" >> $GITHUB_OUTPUT
+             echo "🔹 Update detected for $PACKAGE_NAME"
+          else
+             echo "is_update=false" >> $GITHUB_OUTPUT
+             echo "✨ New package detected: $PACKAGE_NAME"
+          fi
+
+          mkdir -p "$TARGET_DIR"
+
+          # 👇 UPDATED LOGIC: Dynamic Copy Loop
+          # We iterate over the space-separated list from inputs.files
+          FILES="${{ inputs.files }}"
+
+          for file in $FILES; do
+             src_path="$SOURCE_ROOT/$file"
+
+             if [ -e "$src_path" ]; then
+                echo "📦 Copying $file..."
+                cp -r "$src_path" "$TARGET_DIR/"
+             else
+                # We warn but don't fail, ensuring defaults like 'src'
+                # don't break simple packages that lack them.
+                echo "⚠️  Skipping $file (not found in source)"
+             fi
+          done
+
+          echo "✅ Files prepared in $TARGET_DIR"
+
+      - name: Push to Fork
+        working-directory: packages-fork
+        env:
+          GH_TOKEN: ${{ secrets.packages_pat }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          PACKAGE_NAME: ${{ steps.metadata.outputs.name }}
+          IS_UPDATE: ${{ steps.prep.outputs.is_update }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH_NAME="$PACKAGE_NAME-$VERSION"
+          git checkout -b "$BRANCH_NAME"
+          git add .
+          git commit -m "$PACKAGE_NAME:$VERSION"
+          git push origin "$BRANCH_NAME"
+
+          if [ "$IS_UPDATE" = "true" ]; then
+            CHECKBOXES="- [ ] a new package
+          - [x] an update for a package"
+          else
+            CHECKBOXES="- [x] a new package
+          - [ ] an update for a package"
+          fi
+
+          cat <<EOF > pr_body.txt
+          I am submitting
+
+          $CHECKBOXES
+
+          Description:
+          $RELEASE_BODY
+
+          I have read and followed the submission guidelines and, in particular, I
+
+          - [x] selected [a name](https://github.com/typst/packages/blob/main/docs/manifest.md) that isn't the most obvious or canonical name for what the package does
+          - [x] added a [\`typst.toml\`](https://github.com/typst/packages/blob/main/docs/manifest.md) file with all required keys
+          - [x] added a [\`README.md\`](https://github.com/typst/packages/blob/main/docs/documentation.md) with documentation for my package
+          - [x] have chosen [a license](https://github.com/typst/packages/blob/main/docs/licensing.md) and added a \`LICENSE\` file or linked one in my \`README.md\`
+          - [x] tested my package locally on my system and it worked
+          - [x] [\`exclude\`d](https://github.com/typst/packages/blob/main/docs/tips.md) PDFs or README images, if any, but not the LICENSE
+          - [x] ensured that my package is licensed such that users can use and distribute the contents of its template directory without restriction, after modifying them through normal use.
+          EOF
+
+          REPO_OWNER=$(echo "${{ inputs.fork_repo }}" | cut -d'/' -f1)
+          echo "🚀 Branch '$BRANCH_NAME' pushed to ${{ inputs.fork_repo }}!"
+          echo "--------------------------------------------------------"
+          echo "📋 PR Body Preview:"
+          cat pr_body.txt
+          echo "🔗 Create PR here: https://github.com/typst/packages/compare/main...${REPO_OWNER}:$BRANCH_NAME"
+
