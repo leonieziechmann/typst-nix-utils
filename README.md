@@ -49,7 +49,7 @@ outputs = { ... }: {
     version = "0.2.0-dev";
     src = ./.;
     # Only expose what matters (keeps cache small)
-    files = [ "lib.typ" "typst.toml" "src" ]; 
+    files = [ "lib.typ" "typst.toml" "src" ];
   };
 }
 ```
@@ -63,7 +63,7 @@ In your consumer repo (e.g., `my-template`), import the library and create a dev
 inputs = {
   # ... other inputs ...
   # Point directly to your other project!
-  my-core.url = "github:me/my-core"; 
+  my-core.url = "github:me/my-core";
   # OR for local dev: "path:../my-core";
 };
 
@@ -72,13 +72,13 @@ outputs = { self, pkgs, typst-utils, my-core, ... }: {
     buildInputs = [
       (typst-utils.lib.mkTypstEnv {
         inherit pkgs;
-        typst = pkgs.typst; 
-        packages = [ 
+        typst = pkgs.typst;
+        packages = [
           # 🚀 THIS is the magic:
           my-core.packages.${system}.default
 
           # You can also add nixpkgs versions:
-          # pkgs.typstPackages.codetastic 
+          # pkgs.typstPackages.codetastic
         ];
       })
     ];
@@ -99,3 +99,34 @@ outputs = { self, pkgs, typst-utils, my-core, ... }: {
 
 
 * **`buildTypstPackage`**: Installs your source files into the correct XDG structure (`share/typst/packages/preview/...`) so they are discoverable.
+
+## 🚀 Publishing Workflow
+
+This repository also includes a **Reusable GitHub Workflow** to automate publishing your packages to the [Typst Universe](https://github.com/typst/packages). It handles version extraction, file copying, and pushing to your fork of `typst/packages`.
+
+Create a file at `.github/workflows/publish.yaml` in your package repository:
+
+```yaml
+name: Publish to Typst Universe
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    # Use the shared workflow from this repo
+    uses: leonieziechmann/typst-nix-utils/.github/workflows/publish-package.yaml@main
+    with:
+      # Target fork where the PR branch will be pushed
+      fork_repo: leonieziechmann/packages
+
+      # Optional: Override which files are included (Default: "typst.toml lib.typ src LICENSE README.md")
+      # files: "typst.toml lib.typ assets template LICENSE README.md"
+
+      # Optional: Path to package root if it's not in the repo root
+      # package_path: "packages/my-lib"
+    secrets:
+      # A PAT with permission to push to your fork
+      packages_pat: ${{ secrets.PACKAGES_PAT }}
+```
